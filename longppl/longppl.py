@@ -104,7 +104,7 @@ def compute_offsets(text, tokenizer, input_ids):
 def compute_longppl(
         text,
         model,
-        evaluator_model,
+        evaluator_model=None,
         tokenizer=None, 
         evaluator_tokenizer=None, 
         save_path=None, 
@@ -123,10 +123,8 @@ def compute_longppl(
             Can be either:
                 - The model used for LongPPL calculation.
                 - The path to the model used for LongPPL calculation.
-        evaluator_model (`transformers.PretrainedModel` or `str`): 
-            Can be either:
-                - The evaluator model used to identify the key tokens.
-                - The path to the evaluator model.
+        evaluator_model (`transformers.PretrainedModel`): 
+            The evaluator model used to identify the key tokens.
         tokenizer (`transformers.PretrainedTokenizer`, *optional*): 
             Tokenizer of the evaluated model if `model` is specified with a `transformers.PretrainedModel` object, otherwise should be `None`.
         evaluator_tokenizer (`transformers.PretrainedTokenizer`, *optional*): 

@@ -86,9 +86,9 @@ def main(args):
 
     if args.mode == 'online':
         evaluator_model = AutoModelForCausalLM.from_pretrained(args.evaluator_model, torch_dtype=torch.bfloat16, device_map="auto")
+        evaluator_tokenizer = AutoTokenizer.from_pretrained(args.evaluator_model)
     elif args.mode == 'offline':
-        evaluator_model = None
-    evaluator_tokenizer = AutoTokenizer.from_pretrained(args.evaluator_model)
+        evaluator_model, evaluator_tokenizer = None, None
 
     if args.tokenized:
         try:
