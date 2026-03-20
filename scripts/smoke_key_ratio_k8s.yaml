@@ -1,0 +1,19 @@
+- model_path: meta-llama/Meta-Llama-3.1-8B
+  served_model_name: meta-llama/Meta-Llama-3.1-8B
+  serving_framework: VLLM
+  tp: 1
+  model_location: HF
+  skip_server: true
+  revisions:
+    - workload: smoke-key-ratio
+      num_servers: 1
+      priority: high
+      user_cmd: >-
+        pip install gcsfs pyarrow einops sentencepiece protobuf &&
+        gsutil cp gs://consus-dataproc/ocr/ia-ascm/scripts/smoke_key_ratio.py /tmp/smoke_key_ratio.py &&
+        python /tmp/smoke_key_ratio.py
+        --n-docs 100
+        --output /tmp/smoke_results.json
+        --key-tokens-output /tmp/smoke_key_tokens.jsonl &&
+        gsutil cp /tmp/smoke_results.json gs://consus-dataproc/ocr/ia-ascm/smoke_results.json &&
+        gsutil cp /tmp/smoke_key_tokens.jsonl gs://consus-dataproc/ocr/ia-ascm/smoke_key_tokens.jsonl
