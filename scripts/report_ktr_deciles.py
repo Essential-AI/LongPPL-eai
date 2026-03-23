@@ -105,6 +105,10 @@ def build_text_index(gcs_text_path):
     lines = gcs_list(gcs_text_path, recursive=True)
     index = {os.path.basename(p): p for p in lines if p.endswith(".parquet")}
     if not index:
+        # Fallback: non-recursive listing (handles flat single-file datasets)
+        lines = gcs_list(gcs_text_path, recursive=False)
+        index = {os.path.basename(p): p for p in lines if p.endswith(".parquet")}
+    if not index:
         print(f"ERROR: no parquet files under {gcs_text_path}", file=sys.stderr)
         sys.exit(1)
     print(f"Indexed {len(index)} tokenized parquet file(s).", flush=True)
@@ -176,9 +180,8 @@ def fetch_excerpts(sampled, text_index, tokenizer, begin_tokens=1024, window_tok
 # ---------------------------------------------------------------------------
 
 SYSTEM_PROMPT = """\
-You are a researcher analyzing documents from the Internet Archive's scholarly and book corpus \
-(ia-ascm) to understand what linguistic and structural features drive context-dependency in \
-language models.
+You are a researcher analyzing documents from {corpus_description} to understand what \
+linguistic and structural features drive context-dependency in language models.
 
 The KTR (Key Token Ratio) metric measures the fraction of tokens in a document's scoring window \
 (roughly tokens 32,000–42,000 into the document) that require long context (32K tokens) rather \
@@ -262,13 +265,13 @@ def build_decile_prompt(decile_label, docs):
     return "\n".join(lines)
 
 
-def analyze_decile(client, decile_label, docs, claude_model):
+def analyze_decile(client, decile_label, docs, claude_model, corpus_description):
     prompt = build_decile_prompt(decile_label, docs)
     print(f"  Calling Claude ({claude_model}) for {decile_label} (~{len(prompt):,} chars prompt)...", flush=True)
     response = client.messages.create(
         model=claude_model,
-        max_tokens=2000,
-        system=SYSTEM_PROMPT.format(n_docs=len(docs)),
+        max_tokens=4000,
+        system=SYSTEM_PROMPT.format(n_docs=len(docs), corpus_description=corpus_description),
         messages=[{"role": "user", "content": prompt}],
     )
     usage = response.usage
@@ -277,8 +280,8 @@ def analyze_decile(client, decile_label, docs, claude_model):
 
 
 SYNTHESIS_PROMPT = """\
-You have analyzed four KTR deciles from the ia-ascm corpus (Internet Archive scholarly/book \
-documents). The deciles were drawn from 285,326 scored documents, with scoring based on \
+You have analyzed four KTR deciles from {corpus_description}. \
+The deciles were drawn from {n_total_docs:,} scored documents, with scoring based on \
 comparing per-token losses at 4K vs 32K context length at roughly the 32K–42K token mark \
 in each document.
 
@@ -308,15 +311,18 @@ artificially high or low KTR for reasons unrelated to genuine semantic long-rang
 Be specific and evidence-based. Reference observations from the individual decile analyses."""
 
 
-def synthesize(client, analyses, claude_model):
+def synthesize(client, analyses, claude_model, corpus_description, n_total_docs):
     analyses_block = "\n\n".join(
         f"### {label} Analysis\n\n{text}" for label, text in analyses.items()
     )
-    prompt = SYNTHESIS_PROMPT.format(analyses=analyses_block)
+    prompt = SYNTHESIS_PROMPT.format(
+        analyses=analyses_block, corpus_description=corpus_description,
+        n_total_docs=n_total_docs,
+    )
     print(f"  Calling Claude ({claude_model}) for synthesis (~{len(prompt):,} chars prompt)...", flush=True)
     response = client.messages.create(
         model=claude_model,
-        max_tokens=1500,
+        max_tokens=3000,
         system=(
             "You are a researcher synthesizing findings about document context-dependency "
             "in language model training data. Be specific and evidence-based."
@@ -356,6 +362,11 @@ def main():
                         help="Path to JSONL cache of fetched excerpts. "
                              "If the file exists, skip GCS fetch and load from it. "
                              "If it does not exist, fetch and save to it.")
+    parser.add_argument("--source-name", default="ia-ascm",
+                        help="Short source name for report title (default: ia-ascm)")
+    parser.add_argument("--corpus-description",
+                        default="Internet Archive's scholarly and book corpus (ia-ascm)",
+                        help="Corpus description used in Claude prompts")
     args = parser.parse_args()
 
     target_labels = [int(x) for x in args.target_deciles.split(",")]
@@ -387,12 +398,14 @@ def main():
                 print(f"  WARNING: no cached docs for {label}, skipping", file=sys.stderr)
                 continue
             print(f"\nAnalyzing {label} ({len(docs)} docs)...", flush=True)
-            analyses[label] = analyze_decile(client, label, docs, args.claude_model)
+            analyses[label] = analyze_decile(client, label, docs, args.claude_model, args.corpus_description)
+        n_total_docs = sum(len(v) for v in docs_by_label.values())
 
     else:
         # 1. Load scores and assign deciles
         df = load_scores(args.gcs_scores_path)
         df = assign_deciles(df)
+        n_total_docs = len(df)
 
         # 2. Sample target deciles
         sampled_parts = []
@@ -457,13 +470,13 @@ def main():
                 print(f"  WARNING: no docs fetched for {label}, skipping", file=sys.stderr)
                 continue
             print(f"\nAnalyzing {label} ({len(docs)} docs)...", flush=True)
-            analyses[label] = analyze_decile(client, label, docs, args.claude_model)
+            analyses[label] = analyze_decile(client, label, docs, args.claude_model, args.corpus_description)
 
     # 6. Synthesis
     synthesis = None
     if len(analyses) >= 2:
         print("\nGenerating synthesis...", flush=True)
-        synthesis = synthesize(client, analyses, args.claude_model)
+        synthesis = synthesize(client, analyses, args.claude_model, args.corpus_description, n_total_docs)
 
     # 7. Write report
     # Build decile stats from whichever docs we have
@@ -471,6 +484,11 @@ def main():
     for d_label in target_labels:
         label = f"D{d_label}"
         if args.excerpt_cache and os.path.exists(args.excerpt_cache):
+            if "cache_records" not in dir():
+                cache_records = []
+                with open(args.excerpt_cache) as f:
+                    for line in f:
+                        cache_records.append(json.loads(line))
             recs = [r for r in cache_records if r["_target_label"] == label]
             if recs:
                 ktrs = [r["ktr"] for r in recs]
@@ -482,10 +500,10 @@ def main():
                 decile_stats[label] = (subset.min(), subset.max(), len(subset))
 
     report_lines = [
-        "# KTR Decile Analysis: ia-ascm Context Ladder (4K vs 32K)",
+        f"# KTR Decile Analysis: {args.source_name} Context Ladder (4K vs 32K)",
         "",
         "Analysis of what document features drive high vs low Key Token Ratio (KTR) "
-        "on `ktr_4096v32768`, based on 10 sampled documents per decile.",
+        f"on `ktr_4096v32768`, based on {args.n_samples} sampled documents per decile.",
         "",
         "**Metric definitions:**",
         "- **KTR (Key Token Ratio)**: fraction of tokens in the scoring window "
@@ -494,7 +512,7 @@ def main():
         "- **MCB (Mean Cross-entropy Benefit)**: mean loss reduction on key tokens",
         "- **frac_pos**: fraction of tokens with *any* improvement from long context",
         "",
-        "**Decile ranges (all 285K docs):**",
+        f"**Decile ranges (all {n_total_docs:,} docs):**",
         "",
     ]
 

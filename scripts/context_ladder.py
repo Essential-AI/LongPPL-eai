@@ -39,19 +39,22 @@ import numpy as np
 # ---------------------------------------------------------------------------
 
 def load_docs_from_gcs(gcs_path, n_docs, min_tokens, token_column,
-                       doc_offset=0, file_index=None):
+                       doc_offset=0, file_index=None, id_columns=None):
     """Load tokenized documents from a GCS parquet dataset.
 
     Args:
         file_index: If set, only read this parquet file (0-indexed) and process
             all eligible docs in it. Much faster than doc_offset for multi-file
             datasets since it skips scanning earlier files.
+        id_columns: Optional list of column names to pass through from the input
+            parquet to the output (e.g. ['xxh3_64_int']).
 
     Returns list of dicts with keys:
         source_file: parquet filename (basename, not full path)
         row_index: row index within that parquet file
         input_ids: list of token IDs
         doc_len: number of tokens in the full document
+        + any columns specified in id_columns
     """
     import gcsfs
     import pyarrow.parquet as pq
@@ -88,6 +91,7 @@ def load_docs_from_gcs(gcs_path, n_docs, min_tokens, token_column,
             all_col_names = pq.read_schema(f).names
         with fs.open(pf, "rb") as f:
             needed = [token_column] + (["token_len"] if "token_len" in all_col_names else [])
+            needed += [c for c in (id_columns or []) if c in all_col_names]
             table = pq.read_table(f, columns=needed)
 
         if token_column not in table.column_names:
@@ -108,12 +112,16 @@ def load_docs_from_gcs(gcs_path, n_docs, min_tokens, token_column,
             if skipped < doc_offset:
                 skipped += 1
                 continue
-            docs.append({
+            doc = {
                 "source_file": basename,
                 "row_index": row_idx,
                 "input_ids": tokens,
                 "doc_len": doc_len if doc_len is not None else len(tokens),
-            })
+            }
+            for ic in (id_columns or []):
+                if ic in table.column_names:
+                    doc[ic] = table.column(ic)[row_idx].as_py()
+            docs.append(doc)
             if n_docs > 0 and len(docs) >= n_docs:
                 break
 
@@ -294,9 +302,18 @@ def main():
                              "Much faster than --doc-offset for multi-file datasets.")
     parser.add_argument("--checkpoint-interval", type=int, default=50,
                         help="Upload partial results to GCS every N docs")
+    parser.add_argument("--id-columns", type=str, default=None,
+                        help="Comma-separated column names to pass through from input to output "
+                             "(e.g. xxh3_64_int). Included in each output row for easier joining.")
     args = parser.parse_args()
 
     context_lengths = sorted(int(x) for x in args.context_lengths.split(","))
+    # Split on comma or plus — plus is useful when value is passed via CSV
+    # (where commas are field separators)
+    id_columns = None
+    if args.id_columns:
+        import re
+        id_columns = re.split(r"[,+]", args.id_columns)
 
     # --- GPU info ---
     print("=" * 60)
@@ -322,7 +339,7 @@ def main():
     docs = load_docs_from_gcs(
         args.gcs_path, args.n_docs, args.min_tokens,
         args.token_column, doc_offset=args.doc_offset,
-        file_index=args.file_index,
+        file_index=args.file_index, id_columns=id_columns,
     )
 
     # Filter out already-scored docs
@@ -404,6 +421,9 @@ def main():
             "score_window_start": P,
             "time_s": round(elapsed, 2),
         }
+        for ic in (id_columns or []):
+            if ic in doc:
+                row[ic] = doc[ic]
         row.update(pairwise)
         rows.append(row)
         new_count += 1
