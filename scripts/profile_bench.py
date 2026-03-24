@@ -1,6 +1,19 @@
 """
 Profile where time is spent in the forward pass: attention vs linear layers.
 Test batching at each context length to find the sweet spot.
+
+Loads LLaMA-3.1-8B (hardcoded) on a single GPU and runs instrumented forward
+passes at context lengths from 4K to 128K. Uses PyTorch hooks to measure time
+in attention vs MLP sublayers, then tests batching (batch_size=1..4) at each
+context length to find the throughput sweet spot.
+
+No CLI args — all parameters are hardcoded. Requires a single MI300X GPU.
+
+Output: prints a table of context_length x batch_size with tokens/sec, time/doc,
+and attention vs MLP time breakdown.
+
+Usage:
+    python scripts/profile_bench.py
 """
 
 import subprocess

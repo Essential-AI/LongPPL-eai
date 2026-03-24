@@ -192,7 +192,10 @@ def run_phase1(args):
     from transformers import AutoTokenizer
     tokenizer = AutoTokenizer.from_pretrained(args.tokenizer_model)
 
-    # 4. Load model
+    # 4. Load model — sleep first to let GPU driver release VRAM from preempted pods
+    import time
+    print("Waiting 15s for GPU VRAM cleanup...", flush=True)
+    time.sleep(15)
     model = load_model(args.model)
 
     # Hoist constants

@@ -2,7 +2,17 @@
 Micro-benchmark: measure forward pass throughput at different batch sizes
 and context lengths on a single GPU.
 
-Reports tokens/sec and time/doc to show how batching affects throughput.
+Loads LLaMA-3.1-8B (hardcoded) and runs forward passes with random input at
+context lengths {4K, 8K, 16K, 32K} and batch sizes {1, 2, 4}. Reports
+tokens/sec and time/doc to show how batching affects throughput.
+
+No CLI args — all parameters are hardcoded. Requires a single MI300X GPU.
+
+Output: prints a table of context_length x batch_size with tokens/sec and
+time per document.
+
+Usage:
+    python scripts/batch_microbench.py
 """
 
 import subprocess
